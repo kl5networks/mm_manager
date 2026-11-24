@@ -9,6 +9,8 @@
 #ifndef MM_SERIAL_H_
 #define MM_SERIAL_H_
 
+#include <stdint.h>
+
 #if defined(_MSC_VER)
 # include <BaseTsd.h>
 typedef SSIZE_T ssize_t;
@@ -22,7 +24,15 @@ typedef struct mm_serial_context {
     int fd;
     FILE *logstream;
     FILE *bytestream;
+    int is_tcp;     /* "tcp:HOST:PORT": a socket where the serial port would be */
+    intptr_t sock;
 } mm_serial_context_t;
+
+/* A modem reached over TCP rather than a serial port, so a program can play
+ * the Hayes modem with no pty (Windows has none, and a virtual COM pair
+ * needs a driver). Same contract as the port: 1 s read timeout, a read of
+ * 0 bytes is a quiet line, and a closed connection is a read error. */
+#define MM_TCP_PREFIX "tcp:"
 
 mm_serial_context_t* open_serial(const char *modem_dev, FILE *logstream, FILE *bytestream);
 extern int init_serial(mm_serial_context_t *pserial_context, int baudrate);

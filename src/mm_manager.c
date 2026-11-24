@@ -322,6 +322,17 @@ int main(int argc, char *argv[]) {
     time_t rawtime;
     struct tm ptm = { 0 };
 
+    /* KL5 (0012): with -f tcp:, the program at the other end reads this
+     * log from a pipe, where stdout is block-buffered and "Waiting for
+     * call" would never arrive (the server's unit has stdbuf; Windows has
+     * none). Before any output: the MSVC runtime ignores a late setvbuf. */
+    for (c = 1; c < argc; c++) {
+        if (strncmp(argv[c], "tcp:", 4) == 0) {
+            setvbuf(stdout, NULL, _IONBF, 0);
+            setvbuf(stderr, NULL, _IONBF, 0);
+        }
+    }
+
 #ifdef _WIN32
     SetConsoleCtrlHandler(signal_handler, TRUE);
 #else
