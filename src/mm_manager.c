@@ -50,6 +50,14 @@ static void generate_comm_stat_parameters(mm_context_t* context, uint8_t** buffe
 static void generate_user_if_parameters(mm_context_t* context, uint8_t** buffer, size_t* len);
 static void generate_dlog_mt_end_data(mm_context_t* context, uint8_t** buffer, size_t* len);
 static int process_mm_table(mm_context_t* context, mm_table_t* table);
+
+/*
+ * KL5: the last packet this call processed, so a RETRY copy of it can be
+ * told from a RETRY copy of one that never arrived (see process_mm_table).
+ */
+static uint8_t last_rx_payload[sizeof(((mm_packet_t *)0)->payload)];
+static int     last_rx_len = -1;
+static uint8_t last_rx_seq;
 static int create_terminal_specific_directory(char* table_dir, char* terminal_id);
 static int update_terminal_download_time(mm_context_t* context, char* terminal_id);
 static int check_mm_table_is_newer(mm_context_t* context, char* terminal_id, uint8_t table_id);
@@ -603,6 +611,7 @@ int main(int argc, char *argv[]) {
 
         retries = 0;
         if (mm_connection_wait(&mm_context->connection)) {
+            last_rx_len = -1;   /* KL5: a new call has processed nothing yet */
             while (proto_connected(&mm_context->connection.proto) && (manager_running) && (retries < 3)) {
                 retries++;
                 status = process_mm_table(mm_context, &mm_table);
@@ -663,7 +672,40 @@ static int process_mm_table(mm_context_t* context, mm_table_t* table) {
 
     status = receive_mm_table(&context->connection.proto, table);
 
+    /*
+     * KL5: a RETRY is a resend, and only a duplicate of a packet already
+     * processed may be dropped.
+     *
+     * The terminal marks a packet RETRY whenever it sends it a second time.
+     * Upstream returned here on any RETRY, after receive_mm_table had ACKed
+     * it, so the copy was acknowledged and thrown away. That is right only
+     * when the first copy got through and our ACK was what was lost. When
+     * the first copy was garbled, we NACKed it, the terminal resent it
+     * marked RETRY, and the RETRY is the only copy we will ever get -- and
+     * it vanished without a word. On 2026-10-10 02:09 that was the
+     * maintenance report at the end of an INSTALL: every table taken, then
+     * a garbled 0x06, NACK, RETRY, ACK and no MAINT_ACK; the terminal waited
+     * for the answer, hung up, and showed INSTALL FAILED. The same call had
+     * already lost a carrier statistics record the same way, unnoticed.
+     * So process a RETRY unless it is byte for byte the packet just
+     * processed. software/mm/retry_report_repro.py proves both cases.
+     */
+    if (status == PKT_ERROR_RETRY) {
+        uint8_t seq = table->pkt.hdr.flags & FLAG_SEQUENCE;
+        if (last_rx_len == (int)table->pkt.payload_len && last_rx_seq == seq &&
+            memcmp(last_rx_payload, table->pkt.payload, (size_t)last_rx_len) == 0) {
+            printf("\tTerminal resent a packet already processed (RETRY): ignored.\n");
+            return status;
+        }
+        printf("\tTerminal resent a packet that never arrived intact (RETRY): processing it.\n");
+        status = PKT_SUCCESS;
+    }
+
     if (status != 0) return status;
+
+    last_rx_len = (int)table->pkt.payload_len;
+    last_rx_seq = table->pkt.hdr.flags & FLAG_SEQUENCE;
+    memcpy(last_rx_payload, table->pkt.payload, (size_t)last_rx_len);
 
     phone_num_to_string(terminal_id, sizeof(terminal_id), pkt->payload, PKT_TABLE_ID_OFFSET);
     ppayload = pkt->payload + PKT_TABLE_ID_OFFSET;
