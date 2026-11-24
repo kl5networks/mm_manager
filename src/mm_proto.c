@@ -277,6 +277,37 @@ static pkt_status_t receive_mm_packet(mm_proto_t *proto, mm_packet_t *pkt) {
 
         timeout = 0;
 
+        /*
+         * "NO CARRIER" arriving in the data stream means the call is gone.
+         *
+         * A real modem reports a dropped call by lowering DCD, which is what
+         * monitor_carrier polls. A pty has no DCD, so -w turns that off, and
+         * then nothing noticed a hangup at all: the modem's NO CARRIER was
+         * parsed as line noise and the manager sat in a dead session until
+         * its own timeouts gave up. That bit every Millennium INSTALL, whose
+         * answer-detect check places a short call to the manager and hangs
+         * up: the download call arriving ~20 s later landed inside that dead
+         * session, got "Expected NACK", and failed; the retry worked.
+         *
+         * Matched only between packets (SEARCH_FOR_START), so the bytes of
+         * a framed packet can never trip it.
+         */
+        if (l2_state == L2_STATE_SEARCH_FOR_START) {
+            static const char no_carrier[] = "NO CARRIER";
+            static size_t nc_matched = 0;
+
+            if (databyte == (uint8_t)no_carrier[nc_matched]) {
+                if (++nc_matched == sizeof(no_carrier) - 1) {
+                    nc_matched = 0;
+                    printf("%s: NO CARRIER from modem, call ended.\n", __func__);
+                    proto_disconnect(proto);
+                    return PKT_ERROR_NO_CARRIER;
+                }
+            } else {
+                nc_matched = (databyte == (uint8_t)no_carrier[0]) ? 1 : 0;
+            }
+        }
+
         switch (l2_state) {
             case L2_STATE_SEARCH_FOR_START:
                 if (databyte == START_BYTE) {
