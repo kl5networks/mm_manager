@@ -262,6 +262,30 @@ static pkt_status_t receive_mm_packet(mm_proto_t *proto, mm_packet_t *pkt) {
             fflush(stdout);
             timeout++;
 
+            /*
+             * A second of silence INSIDE a packet means the packet is broken.
+             *
+             * At 1200 baud a byte arrives every 8 ms, and a terminal sends a
+             * packet's bytes back to back, so a whole read timeout with no
+             * byte part-way through a frame is never a slow terminal. It is
+             * a frame that lost bytes: an HT802 mutes 20-35 ms of the
+             * terminal's audio when its DTMF detector false-triggers on the
+             * 212A carrier, the modem drops a character or two, and the
+             * STOP byte is read as CRC (or the length runs past the end).
+             * Upstream then waited out PKT_TIMEOUT_MAX -- eleven seconds on
+             * 2026-10-10, CRC error at 01:13:13, resend at 01:13:24 -- while
+             * the terminal, which had already sent its ACK, waited for the
+             * next packet and gave up: "disconnect status Failure" 3 s after
+             * the resend, mid-INSTALL. Ending the frame after one timeout
+             * makes the caller resend at once, which is what the terminal is
+             * waiting for. Between packets (SEARCH_FOR_START) nothing changes.
+             */
+            if (l2_state != L2_STATE_SEARCH_FOR_START) {
+                printf("%s: Packet cut short (no byte for a second mid-packet), status=0x%02x.\n",
+                       __func__, status);
+                return status | PKT_ERROR_FRAMING;
+            }
+
             if (timeout > PKT_TIMEOUT_MAX) {
                 printf("%s: Timeout waiting for packet error.\n", __func__);
                 status = PKT_ERROR_TIMEOUT;
