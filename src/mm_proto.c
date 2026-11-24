@@ -470,6 +470,23 @@ static pkt_status_t receive_mm_packet(mm_proto_t *proto, mm_packet_t *pkt) {
         mm_udp_send_pkt(RX, pkt);
     }
 
+    /*
+     * KL5: a packet that failed its CRC or lost its STOP byte has nothing in
+     * it that can be believed, its FLAGS byte included. Upstream acted on
+     * those flags anyway, so a damaged frame with bit 5 set hung the call
+     * up as a terminal "disconnect": on the VoIP path an ATA mute drops a
+     * byte or two, a payload byte slides into the flags position, and
+     * DISCONNECT is one bit in eight. The phone, which never asked to hang
+     * up, then reports a failed download that a NACK would have saved.
+     * Return the error alone, and every caller NACKs it or resends.
+     * software/mm/corrupt_flags_repro.py plays such a packet.
+     */
+    if (status & (PKT_ERROR_CRC | PKT_ERROR_FRAMING)) {
+        printf("%s: Ignoring the flags (0x%02x) of a damaged packet; asking for it again.\n",
+               __func__, pkt->hdr.flags);
+        return status;
+    }
+
     if (pkt->hdr.flags & FLAG_RETRY) {
         if (proto->debuglevel > 0) print_mm_packet(RX, pkt);
         status |= PKT_ERROR_RETRY;
