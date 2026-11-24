@@ -206,6 +206,17 @@ void *mm_open_database(const char *database_filename) {
         return NULL;
     }
 
+    /*
+     * KL5 (patches/0011): wait for a lock instead of failing at once. The
+     * SERVER runs a POOL of managers (2026-11-11: several phones programming
+     * at once on the public line), and every one of them opens this same
+     * relative "mm_manager.db" from the same clone. SQLite's default is no
+     * busy handler at all, so the second manager to write a call record while
+     * the first held the lock got SQLITE_BUSY and the record was lost without
+     * a word. Five seconds is far longer than any one write here takes.
+     */
+    sqlite3_busy_timeout(db, 5000);
+
     if (mm_acct_create_tables(db) != 0) {
         fprintf(stderr, "Failure creating accounting tables: %s\n", sqlite3_errmsg(db));
         sqlite3_close(db);
