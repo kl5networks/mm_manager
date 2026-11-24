@@ -141,6 +141,7 @@ int wait_for_table_ack(mm_proto_t* proto, uint8_t table_id) {
     mm_packet_t* pkt = &packet;
     int status;
     int retries = 2;
+    int stale = 0;      /* KL5: table ACKs for some other table, acknowledged and waited past */
 
     if (proto->debuglevel > 1) printf("Waiting for ACK for table %d (0x%02x)\n", table_id, table_id);
 
@@ -169,9 +170,47 @@ int wait_for_table_ack(mm_proto_t* proto, uint8_t table_id) {
                     send_mm_ack(proto, FLAG_ACK);
                     return 0;
                 }
+                else if (pkt->payload[PKT_TABLE_ID_OFFSET] == DLOG_MT_TABLE_UPD_ACK) {
+                    /*
+                     * KL5: the terminal's ACK for ANOTHER table is still a
+                     * packet it sent intact, and the link owes it an ACK
+                     * whatever it says. Upstream returned -1 here without one,
+                     * and the download loop moved on to the next table.
+                     *
+                     * On 2026-10-14 01:08 half a second toward the phone went
+                     * missing, and in it our ACK of its TAB_UPD_ACK for table
+                     * 33 and the first copy of table 34. The phone's link layer
+                     * ACKed the resent 34, then 35, then 50; its table layer,
+                     * still owed that ACK, resent TAB_UPD_ACK(33) marked RETRY
+                     * every 10 s, and each copy was met with "Received ACK for
+                     * wrong table" and nothing on the wire. After the third it
+                     * hung up: INSTALL FAILED, over a six-byte ACK the manager
+                     * had every reason to send. So ACK it, say so, and keep
+                     * waiting for this table's own ACK: a stale ACK is the
+                     * terminal catching up, not a reason to move on -- and
+                     * moving on leaves this table's ACK to arrive while the
+                     * next table's link ACK is awaited, where wait_for_mm_ack
+                     * would take it for that one. Bounded by the terminal's
+                     * own patience (three copies), so a terminal that only
+                     * ever says the wrong thing cannot hold the loop. Any
+                     * other message keeps upstream's answer, no ACK and give
+                     * up on the table, because a record the terminal keeps
+                     * and resends beats one ACKed and never processed.
+                     * software/mm/stale_ack_repro.py plays that call.
+                     */
+                    uint8_t got = pkt->payload[PKT_TABLE_DATA_OFFSET];
+                    printf("%s: ACK for table %d (0x%02x)%s while waiting for table %d (0x%02x)'s: acknowledged, still waiting.\n",
+                           __func__, got, got, (status == PKT_ERROR_RETRY) ? " (RETRY)" : "", table_id, table_id);
+                    send_mm_ack(proto, FLAG_ACK);
+                    if (++stale >= PKT_MAX_STALE_ACKS) {
+                        printf("%s: Error: %d ACKs for other tables while waiting for table %d (0x%02x)'s; giving up on it.\n",
+                               __func__, stale, table_id, table_id);
+                        return -1;
+                    }
+                }
                 else {
-                    printf("%s: Error: Received ACK for wrong table, expected %d (0x%02x), received %d (0x%02x)\n",
-                        __func__, table_id, table_id, pkt->payload[6], pkt->payload[6]);
+                    printf("%s: Error: Received message 0x%02x, not the ACK for table %d (0x%02x); not acknowledged, giving up on the table.\n",
+                        __func__, pkt->payload[PKT_TABLE_ID_OFFSET], table_id, table_id);
                     return -1;
                 }
             }

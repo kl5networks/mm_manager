@@ -70,6 +70,7 @@
 
 #define PKT_TIMEOUT_MAX             (10)    // Maximum time to wait for modem character
 #define PKT_ACK_TIMEOUT             (5)     // Seconds an awaited ACK may take to start (patches/0006)
+#define PKT_MAX_STALE_ACKS          (3)     // Table ACKs for some other table taken while one table's is awaited (patches/0009)
 #define PKT_MAX_RETRIES             (5)     // Maximum number of time to retry an errored packet
 
 #define PKT_TABLE_ID_OFFSET         (0x05)
