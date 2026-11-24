@@ -458,6 +458,7 @@ static pkt_status_t send_mm_packet(mm_proto_t* proto, uint8_t* payload, size_t l
     mm_packet_t pkt;
     pkt_status_t status = PKT_SUCCESS;
     int retries;
+    int resend = 0;     /* the terminal may already hold this packet */
 
     for (retries = 0; retries < PKT_MAX_RETRIES; retries++) {
         /* Bail out if not connected. */
@@ -509,7 +510,7 @@ static pkt_status_t send_mm_packet(mm_proto_t* proto, uint8_t* payload, size_t l
             pkt.hdr.flags = flags | (proto->rx_seq & FLAG_SEQUENCE);
         }
 
-        if (flags & FLAG_RETRY) {
+        if ((flags & FLAG_RETRY) || resend) {
             pkt.hdr.flags |= FLAG_RETRY;
         }
 
@@ -560,7 +561,19 @@ static pkt_status_t send_mm_packet(mm_proto_t* proto, uint8_t* payload, size_t l
             break;
         }
 
-        printf("%s: Received NACK, retrying %d.\n", __func__, retries);
+        /* A clean NACK means the terminal did not take the packet, and a
+         * plain resend is what it wants (that recovery is seen working).
+         * A garbled or missing ACK means it probably did: it has moved its
+         * sequence on, and the same packet again without RETRY is a
+         * protocol error to it -- every INSTALL that died after a cut or
+         * lost ACK ended "disconnect status Failure" about three seconds
+         * after the resend, while every resend after a clean NACK went
+         * through (2026-10-10). Mark that resend as one, the way the
+         * terminal marks its own. */
+        resend = (status != PKT_ERROR_NACK);
+
+        printf("%s: Received NACK, retrying %d%s.\n", __func__, retries,
+               resend ? " (marked RETRY: the ACK was lost or garbled)" : "");
     }
 
     if (retries == PKT_MAX_RETRIES) {
