@@ -53,6 +53,7 @@ static int process_mm_table(mm_context_t* context, mm_table_t* table);
 static int create_terminal_specific_directory(char* table_dir, char* terminal_id);
 static int update_terminal_download_time(mm_context_t* context, char* terminal_id);
 static int check_mm_table_is_newer(mm_context_t* context, char* terminal_id, uint8_t table_id);
+static int terminal_has_changed_tables(mm_context_t* context, char* terminal_id);
 static void mm_display_help(const char* name, FILE* stream);
 #ifndef _WIN32
 void signal_handler(int sig);
@@ -1150,6 +1151,43 @@ static int process_mm_table(mm_context_t* context, mm_table_t* table) {
                     printf("Sending DLOG_MT_END_DATA.\n");
                 }
 
+                /*
+                 * KL5: send what changed on a routine call-in, not only on
+                 * craft 369 -- and send it HERE, once the terminal has said
+                 * it is done transmitting, never in the CALL_IN handler.
+                 *
+                 * Upstream left the download commented out in DLOG_MT_CALL_IN,
+                 * and the first version of this patch switched it on there.
+                 * That handler's reply is TRANS_DATA, "send me your records",
+                 * so the download began while the terminal was transmitting:
+                 * both sides on the line at once, the manager reading the
+                 * terminal's own records as "ACK for wrong table", then CRC
+                 * and framing errors, then the terminal hanging up -- and
+                 * calling back every fifteen minutes to fail the same way
+                 * (2026-09-30, four call-ins in a row on the bench phone).
+                 *
+                 * The terminal takes tables after END_DATA followed by a
+                 * TABLE_UPD announcement: that is the reply upstream sends a
+                 * terminal that asked for a download (TIME_SYNC, END_DATA,
+                 * TABLE_UPD, then the tables), and the one this phone took a
+                 * whole INSTALL from. So the same pair goes here, only when
+                 * this terminal's own directory holds a table newer than its
+                 * last download, so a phone nobody has edited calls in
+                 * exactly as before. The reason is ASSIGNED, not OR-ed: it is
+                 * left over from the terminal's last table request otherwise,
+                 * and a stale Install bit would turn a routine call into a
+                 * full download. FORCE_DL is craft 369's own reason, so the
+                 * download is the one 369 does: the generated tables, then
+                 * only the files newer than table_update.log.
+                 */
+                if (terminal_has_changed_tables(context, terminal_id)) {
+                    printf("\tTerminal %s: tables changed since its last download; "
+                           "sending them now that its data is in.\n", terminal_id);
+                    context->terminal_upd_reason = TTBLREQ_CRAFT_FORCE_DL;
+                    *pack_payload++ = DLOG_MT_TABLE_UPD;
+                    table_download_pending = 1;
+                }
+
                 break;
             case DLOG_MT_TABLE_UPD_ACK:
                 printf("\tDLOG_MT_TABLE_UPD_ACK for table 0x%02x.\n", *ppayload);
@@ -1183,7 +1221,25 @@ static int mm_download_tables(mm_context_t *context, char *terminal_id) {
     uint8_t *table_buffer;
     uint8_t *table_list = table_list_mtr_2x;
     uint8_t  table_id;
-    uint8_t  term_model = term_type_to_model(context->terminal_type);
+    uint8_t  term_model;
+
+    /*
+     * KL5: a routine call-in carries no DLOG_MT_SW_VERSION, so on one the
+     * type is whatever the last INSTALL left in the context -- 0 after a
+     * restart -- and the download below would default every phone to
+     * MTR 1.7. The phone reported its type once; TSWVERS has it. Read it
+     * back before choosing the table list, and say so, because "Unknown
+     * terminal type 0" on every call-in read as a fault and was not one.
+     */
+    if (context->terminal_type == 0) {
+        uint8_t stored = mm_acct_load_terminal_type(context->database, terminal_id);
+        if (stored != 0) {
+            printf("\tTerminal %s: type %d (0x%02x) from its last SW_VERSION report.\n",
+                   terminal_id, stored, stored);
+            context->terminal_type = stored;
+        }
+    }
+    term_model = term_type_to_model(context->terminal_type);
 
     switch (term_type_to_mtr(context->terminal_type)) {
     case MTR_2_X:
@@ -1390,6 +1446,38 @@ static int update_terminal_download_time(mm_context_t *context, char *terminal_i
     fprintf(stream, "%s: Terminal %s download complete.\n", date, terminal_id);
     fclose(stream);
 
+    return 0;
+}
+
+/*
+ * KL5: does this terminal's OWN directory hold a table written since its
+ * last download? Only the per-terminal files count: the console writes
+ * there, and a default table is not something anybody changed for this
+ * phone. No table_update.log means this terminal has never downloaded
+ * from here, which is INSTALL's job, not a routine call's.
+ * Newer-or-equal, like check_mm_table_is_newer(): a table saved in the
+ * same second as the last download is sent rather than lost.
+ */
+static int terminal_has_changed_tables(mm_context_t *context, char *terminal_id) {
+    char        fname[TABLE_PATH_MAX_LEN + 1];
+    struct stat table_attr;
+    struct stat log_attr;
+    int         table_id;
+
+    if (terminal_id[0] == '\0') {
+        return 0;
+    }
+    snprintf(fname, sizeof(fname), "%s/%s/table_update.log", context->term_table_dir, terminal_id);
+    if (stat(fname, &log_attr) == -1) {
+        return 0;
+    }
+    for (table_id = 1; table_id < 256; table_id++) {
+        snprintf(fname, sizeof(fname), "%s/%s/mm_table_%02x.bin",
+                 context->term_table_dir, terminal_id, table_id);
+        if ((stat(fname, &table_attr) == 0) && (table_attr.st_mtime >= log_attr.st_mtime)) {
+            return 1;
+        }
+    }
     return 0;
 }
 

@@ -713,6 +713,25 @@ int mm_acct_save_TSTATUS(void *db, mm_telco_t *telco, char* terminal_id, dlog_mt
     return 0;
 }
 
+/*
+ * KL5: the terminal type this phone reported last, or 0. Via TERMTYP, by its control ROM: TSWVERS.TERMINAL_TYPE holds the FEATURE type (2 on a 1.7).
+ * A routine call-in does not repeat DLOG_MT_SW_VERSION, and
+ * the table list a download uses is chosen by type.
+ */
+uint8_t mm_acct_load_terminal_type(void *db, char* terminal_id) {
+    char sql[256] = { 0 };
+
+    uint64_t val;
+
+    snprintf(sql, sizeof(sql), "SELECT T.TERMINAL_TYPE from TSWVERS S JOIN TERMTYP T ON T.CONTROL_ROM_EDITION = S.CONTROL_ROM_EDITION where(S.TERMINAL_ID = %s) ORDER BY S.ID DESC LIMIT 1",
+        terminal_id);
+    val = mm_sql_read_uint64(db, sql);
+    if (val == 0xFFFFFFFFFFFFFFFFLL) {    /* the query failed (no TSWVERS table yet): not a type */
+        return 0;
+    }
+    return (uint8_t)(val & 0xff);
+}
+
 int mm_acct_save_TSWVERS(void *db, mm_telco_t *telco, char* terminal_id, dlog_mt_sw_version_t* dlog_mt_sw_version, uint8_t *terminal_type) {
     char sql[512] = { 0 };
     char received_time_str[16] = { 0 };

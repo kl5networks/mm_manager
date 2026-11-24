@@ -1403,6 +1403,7 @@ extern int mm_acct_save_TOPCODE(void *db, mm_telco_t *telco, char* terminal_id, 
 extern int mm_acct_save_TPERFST(void *db, mm_telco_t *telco, char* terminal_id, dlog_mt_perf_stats_record_t* perf_stats);
 extern int mm_acct_save_TSTATUS(void *db, mm_telco_t *telco, char* terminal_id, dlog_mt_term_status_t* dlog_mt_term_status);
 extern int mm_acct_save_TSWVERS(void *db, mm_telco_t *telco, char* terminal_id, dlog_mt_sw_version_t* dlog_mt_sw_version, uint8_t* terminal_type);
+extern uint8_t mm_acct_load_terminal_type(void *db, char* terminal_id);
 
 /* Table functions */
 int    mm_table_create_tables(void* db);
