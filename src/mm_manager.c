@@ -1873,7 +1873,15 @@ static int create_terminal_specific_directory(char *table_dir, char *terminal_id
 #ifdef _WIN32
     status = _mkdir(dirname);
 #else  /* ifdef _WIN32 */
-    status = mkdir(dirname, 0755);
+    /*
+     * 0775, not 0755: the KL5 console writes this terminal's tables into
+     * the directory, as its own user, in the kl5 group the parent hands
+     * down (setgid). At 0755 a directory this process created for a new
+     * terminal on its first call-in was writable by root alone, so the
+     * console could show that phone and never change it. The unit's
+     * UMask=0002 keeps the group bit.
+     */
+    status = mkdir(dirname, 0775);
 #endif /* ifdef _WIN32 */
 
     if ((status != 0) && (errno != EEXIST)) {
