@@ -103,6 +103,15 @@ int receive_mm_table(mm_proto_t* proto, mm_table_t* table) {
     return (status);
 }
 
+/* KL5: the size of one piece of table data (see PKT_TABLE_CHUNK_DEFAULT). */
+static size_t table_chunk_len(void) {
+    const char* env = getenv("MM_TABLE_CHUNK");
+    long n = env ? strtol(env, NULL, 10) : 0;
+
+    if (n >= 16 && n <= PKT_TABLE_DATA_LEN_MAX) return (size_t)n;
+    return PKT_TABLE_CHUNK_DEFAULT;
+}
+
 int send_mm_table(mm_proto_t* proto, uint8_t* payload, size_t len) {
     size_t   bytes_remaining;
     size_t   chunk_len;
@@ -114,9 +123,11 @@ int send_mm_table(mm_proto_t* proto, uint8_t* payload, size_t len) {
     bytes_remaining = len;
     printf("\tSending Table ID %d (0x%02x) %s...\n", table_id, table_id, table_to_string(table_id));
 
+    size_t   chunk_max = table_chunk_len();
+
     while (bytes_remaining > 0) {
-        if (bytes_remaining > PKT_TABLE_DATA_LEN_MAX) {
-            chunk_len = PKT_TABLE_DATA_LEN_MAX;
+        if (bytes_remaining > chunk_max) {
+            chunk_len = chunk_max;
         }
         else {
             chunk_len = bytes_remaining;

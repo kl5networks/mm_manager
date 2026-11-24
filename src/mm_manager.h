@@ -71,12 +71,29 @@
 #define PKT_TIMEOUT_MAX             (10)    // Maximum time to wait for modem character
 #define PKT_ACK_TIMEOUT             (5)     // Seconds an awaited ACK may take to start (patches/0006)
 #define PKT_MAX_STALE_ACKS          (3)     // Table ACKs for some other table taken while one table's is awaited (patches/0009)
-#define PKT_MAX_RETRIES             (5)     // Maximum number of time to retry an errored packet
+/*
+ * KL5: ten tries, not five. Over a long-distance path into an ATA the
+ * terminal NACKs 10-35% of a download's packets (2026-11-21, 235 call-in
+ * logs); a packet that has failed five times running is unlucky, not
+ * hopeless, and giving up on it throws away every table already sent.
+ */
+#define PKT_MAX_RETRIES             (10)    // Maximum number of time to retry an errored packet
 
 #define PKT_TABLE_ID_OFFSET         (0x05)
 #define PKT_TABLE_DATA_OFFSET       (PKT_TABLE_ID_OFFSET + 1)
 
 #define PKT_TABLE_DATA_LEN_MAX      (245)   // Maximum table data length
+/*
+ * KL5: table data goes out in pieces of this size, not the most a packet
+ * can carry. At 1200 baud a 245-byte piece holds the line for about two
+ * seconds, and one bad bit anywhere in it (an ATA's DTMF-detector mute is
+ * 20-30 ms of silence) costs the whole piece. The terminal joins the
+ * pieces itself: the last piece of every table was always shorter, and
+ * in the emulator MTR 1.7 took a whole INSTALL at 245, 128 and 64, and
+ * MTR 1.20 (NPA1S01) at 245 and 128.
+ * MM_TABLE_CHUNK in the environment overrides it, 16 to 245.
+ */
+#define PKT_TABLE_CHUNK_DEFAULT     (128)
 
 #define ERROR_INJECT_NONE           (0)
 #define ERROR_INJECT_CRC_DLOG_TX    (1)
