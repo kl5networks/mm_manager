@@ -1361,8 +1361,40 @@ static int mm_download_tables(mm_context_t *context, char *terminal_id) {
                 generate_install_parameters(context, &table_buffer, &table_len);
                 break;
             case DLOG_MT_CALL_IN_PARMS:
+            {
+                /*
+                 * KL5 (patches/0010): a terminal's OWN call-in schedule, when
+                 * its folder holds one, instead of upstream's: a call-in every
+                 * twelve hours, retried every fifteen minutes when nobody
+                 * answers. A phone programmed over the public provisioning
+                 * line goes home with our number as its manager, and that line
+                 * answers no modem outside a window -- so upstream's schedule
+                 * left it redialling us every fifteen minutes for as long as
+                 * it stayed plugged in (2026-10-14: 114 unanswered calls in a
+                 * day, then emergency-operator service). The console writes
+                 * this file only into a beta phone's own folder. The model and
+                 * default folders are never consulted for it, so a stray file
+                 * there cannot change a fleet phone's schedule.
+                 */
+                char own[TABLE_PATH_MAX_LEN];
+                FILE *probe = NULL;
+
+                if (terminal_id[0] != '\0') {
+                    snprintf(own, sizeof(own), "%s/%s/mm_table_%02x.bin",
+                             context->term_table_dir, terminal_id, table_id);
+                    probe = fopen(own, "rb");
+                }
+                if (probe != NULL) {
+                    fclose(probe);
+                    if (load_mm_table(context, terminal_id, table_id, &table_buffer, &table_len) == 0) {
+                        printf("\nCall-In table: the terminal's own, from %s\n", own);
+                        print_call_in_params_table((dlog_mt_call_in_params_t *)table_buffer);
+                        break;
+                    }
+                }
                 generate_call_in_parameters(context, &table_buffer, &table_len);
                 break;
+            }
             case DLOG_MT_NCC_TERM_PARAMS:
                 if (term_type_to_mtr(context->terminal_type) <= MTR_1_13) {
                     generate_term_access_parameters_mtr1(context, terminal_id, &table_buffer, &table_len);
