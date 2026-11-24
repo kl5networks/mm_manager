@@ -779,6 +779,272 @@ int mm_acct_save_TSWVERS(void *db, mm_telco_t *telco, char* terminal_id, dlog_mt
     return mm_sql_exec(db, sql);
 }
 
+/* Carrier call statistics -> TCARRST.
+ *
+ * Two different messages carry these, and a terminal sends one or the other
+ * depending on its MTR version: DLOG_MT_CARRIER_CALL_STATS packs 29 flat
+ * uint16 counters for each of 3 carriers, and DLOG_MT_CARRIER_STATS_EXP packs
+ * a 4x12 call-type-by-payment-type matrix plus 8 named counters for each of 2.
+ *
+ * They are the same statistics differently shaped -- the last nine entries of
+ * the flat form line up one for one with the expanded form's named counters --
+ * so both land in ONE table, narrow: a row per (report, carrier, statistic).
+ * That is a different shape from the wide tables above, deliberately:
+ *
+ *  - The expanded message's 48 matrix cells have no documented individual
+ *    names, so a wide table would mean inventing 48 column names. Here
+ *    STAT_INDEX carries the position, which IS documented, and STAT_NAME
+ *    carries a best-effort label beside it. Relabelling later costs nothing
+ *    because the index is what identifies the cell.
+ *  - A reader does not have to know which MTR version produced the row, which
+ *    matters when the same query has to serve a fleet of mixed vintages.
+ *
+ * The payment-type axis of the expanded matrix is TAKEN to be PMT_TYPE 0..11:
+ * there are exactly twelve slots and exactly twelve defined PMT_TYPE values.
+ * That is an inference from the sizes, not documented, which is the other
+ * reason the numeric index is the thing stored.
+ *
+ * Carriers with no calls are skipped, matching what the terminal's own report
+ * printout does -- a Millennium reports all 2 or 3 carrier slots whether or
+ * not they were used, and storing the empty ones would put two rows of zeroes
+ * in the table for every one row of data.
+ */
+static const char *carrst_payment_type_str_lut[STATS_EXP_PAYMENT_TYPE_MAX] = {
+    "Unused",     "Unused2",      "None",       "Coin",
+    "Credit Card", "Calling Card", "Cash Card",  "Inmate",
+    "Mondex",     "Visa Stored",  "Smart City", "Proton"
+};
+
+/* The stat name LUTs pad to a fixed width for column output; SQL does not
+ * want the padding. */
+static void carrst_trim(char *dst, size_t dstlen, const char *src) {
+    size_t n;
+
+    snprintf(dst, dstlen, "%s", src);
+
+    for (n = strlen(dst); n > 0; n--) {
+        if (dst[n - 1] != ' ') {
+            break;
+        }
+        dst[n - 1] = '\0';
+    }
+}
+
+static int carrst_insert(void *db, mm_telco_t *telco, char *terminal_id,
+                         const char *source_msg, uint8_t carrier_ref,
+                         uint16_t stats_vintage,
+                         const char *start_date_time, const char *stop_date_time,
+                         int stat_index, const char *stat_name, uint32_t stat_value) {
+    char sql[1024] = { 0 };
+    char received_time_str[16] = { 0 };
+
+    snprintf(sql, sizeof(sql), "INSERT " SQL_IGNORE "INTO TCARRST("
+        "TERMINAL_ID,"
+        "RECEIVED_DATE, RECEIVED_TIME,"
+        "STATS_PERIOD_START_DATE,STATS_PERIOD_START_TIME,"
+        "STATS_PERIOD_STOP_DATE,STATS_PERIOD_STOP_TIME,"
+        "STATS_VINTAGE,"
+        "CARRIER_REF,"
+        "SOURCE_MSG,"
+        "STAT_INDEX,"
+        "STAT_NAME,"
+        "STAT_VALUE,"
+        "TELCO_ID, REGION_CODE"
+        ") VALUES ( "
+        "\"%s\",%s,"
+        "%s, %s,"
+        "%d,%d,"
+        "\"%s\",%d,\"%s\",%u,"
+        TELCO_ID_REGION_CODE ");",
+        terminal_id,
+        received_time_to_db_string(received_time_str, sizeof(received_time_str)),
+        start_date_time,
+        stop_date_time,
+        stats_vintage,
+        carrier_ref,
+        source_msg,
+        stat_index,
+        stat_name,
+        stat_value,
+        telco->id[0], telco->id[1],
+        telco->region_code[0], telco->region_code[1], telco->region_code[2]);
+
+    return mm_sql_exec(db, sql);
+}
+
+int mm_acct_save_TCARRST(void *db, mm_telco_t *telco, char *terminal_id,
+                         dlog_mt_carrier_call_stats_t *carr_stats) {
+    char timestamp_str[20]  = { 0 };
+    char timestamp2_str[20] = { 0 };
+    int  rc = 0;
+
+    timestamp_to_db_string(carr_stats->timestamp,  timestamp_str,  sizeof(timestamp_str));
+    timestamp_to_db_string(carr_stats->timestamp2, timestamp2_str, sizeof(timestamp2_str));
+
+    for (int i = 0; i < 3; i++) {
+        carrier_stats_entry_t *pentry = &carr_stats->carrier_stats[i];
+        uint32_t total = 0;
+
+        for (int j = 0; j < 29; j++) {
+            total += LE16(pentry->stats[j]);
+        }
+
+        if (total == 0) {
+            continue;                   /* carrier slot unused; see above */
+        }
+
+        for (int j = 0; j < 29; j++) {
+            char stat_name[32] = { 0 };
+
+            carrst_trim(stat_name, sizeof(stat_name), stats_to_str(j));
+
+            rc = carrst_insert(db, telco, terminal_id, "CARRIER_CALL_STATS",
+                               pentry->carrier_ref, 0,
+                               timestamp_str, timestamp2_str,
+                               j, stat_name, LE16(pentry->stats[j]));
+
+            if (rc != 0) {
+                return rc;
+            }
+        }
+    }
+
+    return rc;
+}
+
+int mm_acct_save_TCARRST_EXP(void *db, mm_telco_t *telco, char *terminal_id,
+                             dlog_mt_carrier_stats_exp_t *carr_stats) {
+    char timestamp_str[20]  = { 0 };
+    char timestamp2_str[20] = { 0 };
+    int  rc = 0;
+
+    timestamp_to_db_string(carr_stats->timestamp,  timestamp_str,  sizeof(timestamp_str));
+    timestamp_to_db_string(carr_stats->timestamp2, timestamp2_str, sizeof(timestamp2_str));
+
+    for (int carrier = 0; carrier < CARRIER_STATS_EXP_MAX_CARRIERS; carrier++) {
+        carrier_stats_exp_entry_t *pentry = &carr_stats->carrier[carrier];
+
+        /* Same test the report printout uses to decide a carrier was unused. */
+        if (LE32(pentry->total_call_duration) == 0) {
+            continue;
+        }
+
+        for (int j = 0; j < STATS_EXP_CALL_TYPE_MAX; j++) {
+            char call_type[32] = { 0 };
+
+            carrst_trim(call_type, sizeof(call_type), stats_call_type_to_str(j));
+
+            for (int i = 0; i < STATS_EXP_PAYMENT_TYPE_MAX; i++) {
+                char stat_name[64] = { 0 };
+
+                snprintf(stat_name, sizeof(stat_name), "%s %s",
+                         call_type, carrst_payment_type_str_lut[i]);
+
+                rc = carrst_insert(db, telco, terminal_id, "CARRIER_STATS_EXP",
+                                   pentry->carrier_ref, carr_stats->stats_vintage,
+                                   timestamp_str, timestamp2_str,
+                                   (j * STATS_EXP_PAYMENT_TYPE_MAX) + i, stat_name,
+                                   LE16(pentry->stats[j][i]));
+
+                if (rc != 0) {
+                    return rc;
+                }
+            }
+        }
+
+        /* The named counters, indexed after the matrix so that STAT_INDEX
+         * stays unique within a row's carrier. */
+        {
+            struct {
+                const char *name;
+                uint32_t    value;
+            } counters[] = {
+                { "Operator Assist",   LE16(pentry->operator_assist_call_count)   },
+                { "0+",                LE16(pentry->zero_plus_call_count)         },
+                { "Free FG-B",         LE16(pentry->free_featb_call_count)        },
+                { "Directory Assist",  LE16(pentry->directory_assist_call_count)  },
+                { "Call Duration",     LE32(pentry->total_call_duration)          },
+                { "Insert Mode Calls", LE16(pentry->total_insert_mode_calls)      },
+                { "Manual Mode Calls", LE16(pentry->total_manual_mode_calls)      },
+                { "Spare Counter",     LE16(pentry->spare_counter)                }
+            };
+            int base = STATS_EXP_CALL_TYPE_MAX * STATS_EXP_PAYMENT_TYPE_MAX;
+
+            for (size_t n = 0; n < sizeof(counters) / sizeof(counters[0]); n++) {
+                rc = carrst_insert(db, telco, terminal_id, "CARRIER_STATS_EXP",
+                                   pentry->carrier_ref, carr_stats->stats_vintage,
+                                   timestamp_str, timestamp2_str,
+                                   base + (int)n, counters[n].name, counters[n].value);
+
+                if (rc != 0) {
+                    return rc;
+                }
+            }
+        }
+    }
+
+    return rc;
+}
+
+/* Terminal error reports -> TERRREP, stored RAW and on purpose.
+ *
+ * Unlike every other message in this file, DLOG_MT_TERM_ERR_REP has no
+ * structure upstream: the handler printed the terminal id and advanced the
+ * payload pointer by a bare 97, with nothing decoded and nothing documented
+ * -- not in mm_manager, not in its README's table list, not in the muCCC
+ * wiki pages the rest of the tables cite. The 97 is itself an undocumented
+ * magic number.
+ *
+ * So this does not pretend to decode it. It stores the bytes as hex beside
+ * the terminal and the arrival time, which is the only useful thing to do
+ * with a message nobody has decoded yet: you cannot reverse-engineer a
+ * format you have never captured, and once a terminal is in service every
+ * report it files is a sample. Decode later, from real data, and the rows
+ * already collected are the corpus.
+ *
+ * It also makes a wrong length visible. If the real message is not 97 bytes
+ * the upstream skip desynchronises the rest of the payload -- already true
+ * before this patch -- but a stored blob that looks truncated or carries
+ * another message's header is evidence, where a printf was not.
+ *
+ * No UNIQUE constraint, deliberately: these are events rather than periodic
+ * reports, a terminal may legitimately file the same bytes twice, and on
+ * sqlite SQL_IGNORE is empty, so a constraint collision would make
+ * mm_sql_exec fail rather than skip.
+ */
+#define TERRREP_MSG_LEN     97      /* including the message id byte */
+
+int mm_acct_save_TERRREP(void *db, mm_telco_t *telco, char *terminal_id, uint8_t *payload) {
+    char sql[1024] = { 0 };
+    char received_time_str[16] = { 0 };
+    char hex[((TERRREP_MSG_LEN - 1) * 2) + 1] = { 0 };
+
+    /* Body only -- the id byte is the message type and is already implied by
+     * the table this lands in. */
+    for (int i = 0; i < TERRREP_MSG_LEN - 1; i++) {
+        snprintf(&hex[i * 2], 3, "%02x", payload[i + 1]);
+    }
+
+    snprintf(sql, sizeof(sql), "INSERT " SQL_IGNORE "INTO TERRREP("
+        "TERMINAL_ID,"
+        "RECEIVED_DATE, RECEIVED_TIME,"
+        "MSG_LEN,"
+        "RAW_DATA,"
+        "TELCO_ID, REGION_CODE"
+        ") VALUES ( "
+        "\"%s\",%s,"
+        "%d,\"%s\","
+        TELCO_ID_REGION_CODE ");",
+        terminal_id,
+        received_time_to_db_string(received_time_str, sizeof(received_time_str)),
+        TERRREP_MSG_LEN - 1,
+        hex,
+        telco->id[0], telco->id[1],
+        telco->region_code[0], telco->region_code[1], telco->region_code[2]);
+
+    return mm_sql_exec(db, sql);
+}
+
 int mm_acct_create_tables(void *db) {
     int rc;
 
@@ -1108,6 +1374,46 @@ int mm_acct_create_tables(void *db) {
 
     if (rc != 0) {
         fprintf(stderr, "%s: Failed to create table TSWVERS.\n", __func__);
+        return -1;
+    }
+
+    rc = mm_sql_exec(db, "CREATE TABLE IF NOT EXISTS TCARRST ( "
+        "ID INTEGER NOT NULL PRIMARY KEY " AUTO_INCREMENT ","
+        "TERMINAL_ID VARCHAR(10) NOT NULL,"
+        "RECEIVED_DATE VARCHAR(8) NOT NULL,"
+        "RECEIVED_TIME VARCHAR(6) NOT NULL,"
+        "STATS_PERIOD_START_DATE VARCHAR(8) NOT NULL,"
+        "STATS_PERIOD_START_TIME VARCHAR(6) NOT NULL,"
+        "STATS_PERIOD_STOP_DATE VARCHAR(8),"
+        "STATS_PERIOD_STOP_TIME VARCHAR(6),"
+        "STATS_VINTAGE SMALLINT UNSIGNED,"
+        "CARRIER_REF SMALLINT UNSIGNED NOT NULL,"
+        "SOURCE_MSG VARCHAR(20) NOT NULL,"
+        "STAT_INDEX SMALLINT UNSIGNED NOT NULL,"
+        "STAT_NAME VARCHAR(64),"
+        "STAT_VALUE INTEGER UNSIGNED,"
+        "TELCO_ID VARCHAR(2) DEFAULT 0, REGION_CODE VARCHAR(3) DEFAULT \"USA\", ARCHIVE_IND BOOLEAN DEFAULT 0,"
+        "UNIQUE(TERMINAL_ID,STATS_PERIOD_START_DATE,STATS_PERIOD_START_TIME,"
+               "CARRIER_REF,SOURCE_MSG,STAT_INDEX) "
+        ");");
+
+    if (rc != 0) {
+        fprintf(stderr, "%s: Failed to create table TCARRST.\n", __func__);
+        return -1;
+    }
+
+    rc = mm_sql_exec(db, "CREATE TABLE IF NOT EXISTS TERRREP ( "
+        "ID INTEGER NOT NULL PRIMARY KEY " AUTO_INCREMENT ","
+        "TERMINAL_ID VARCHAR(10) NOT NULL,"
+        "RECEIVED_DATE VARCHAR(8) NOT NULL,"
+        "RECEIVED_TIME VARCHAR(6) NOT NULL,"
+        "MSG_LEN SMALLINT UNSIGNED NOT NULL,"
+        "RAW_DATA VARCHAR(256) NOT NULL,"
+        "TELCO_ID VARCHAR(2) DEFAULT 0, REGION_CODE VARCHAR(3) DEFAULT \"USA\", ARCHIVE_IND BOOLEAN DEFAULT 0"
+        ");");
+
+    if (rc != 0) {
+        fprintf(stderr, "%s: Failed to create table TERRREP.\n", __func__);
         return -1;
     }
 

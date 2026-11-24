@@ -837,6 +837,9 @@ static int process_mm_table(mm_context_t* context, mm_table_t* table) {
             case DLOG_MT_TERM_ERR_REP: {
                 printf("\t\tTerminal %s DLOG_MT_TERM_ERR_REP\n\n", terminal_id);
 
+                /* Stored raw: this message has no decoded structure, here or
+                 * anywhere documented. See mm_acct_save_TERRREP(). */
+                mm_acct_save_TERRREP(context->database, &context->telco, terminal_id, ppayload);
                 ppayload += 97;
                 break;
             }
@@ -897,7 +900,7 @@ static int process_mm_table(mm_context_t* context, mm_table_t* table) {
             {
                 dlog_mt_carrier_call_stats_t *carr_stats = (dlog_mt_carrier_call_stats_t *)ppayload;
                 ppayload += sizeof(dlog_mt_carrier_call_stats_t);
-                /* TODO: Convert to database. */
+                mm_acct_save_TCARRST(context->database, &context->telco, terminal_id, carr_stats);
                 printf("\t\tCarrier Call Statistics Record: From: %s, to: %s:\n",
                        timestamp_to_string(carr_stats->timestamp,  timestamp_str,  sizeof(timestamp_str)),
                        timestamp_to_string(carr_stats->timestamp2, timestamp2_str, sizeof(timestamp2_str)));
@@ -927,6 +930,7 @@ static int process_mm_table(mm_context_t* context, mm_table_t* table) {
             case DLOG_MT_CARRIER_STATS_EXP: {
                 dlog_mt_carrier_stats_exp_t *carr_stats = (dlog_mt_carrier_stats_exp_t *)ppayload;
                 ppayload += sizeof(dlog_mt_carrier_stats_exp_t);
+                mm_acct_save_TCARRST_EXP(context->database, &context->telco, terminal_id, carr_stats);
 
                 printf("\t\tExpanded Carrier Statistics: From: %s, to: %s:\n",
                        timestamp_to_string(carr_stats->timestamp,  timestamp_str,  sizeof(timestamp_str)),
