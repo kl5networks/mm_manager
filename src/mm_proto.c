@@ -286,6 +286,26 @@ static pkt_status_t receive_mm_packet(mm_proto_t *proto, mm_packet_t *pkt) {
                 return status | PKT_ERROR_FRAMING;
             }
 
+            /*
+             * An ACK that has not started within PKT_ACK_TIMEOUT never will.
+             *
+             * patches/0005 caught an ACK that arrived with a byte missing.
+             * The next INSTALL (2026-10-10 01:28:58) lost one whole: 87% into
+             * the second display-prompt table the terminal's ACK never came,
+             * the manager waited out PKT_TIMEOUT_MAX (12 s) before resending,
+             * and the terminal had hung up by then, so the resend found no
+             * one. A table packet takes about 2.1 s on the wire at 1200 baud
+             * and the terminal ACKs at once -- the bench log shows a packet
+             * every 2.7-3 s -- so six seconds with no byte at all while an
+             * ACK is due is a lost ACK, and resending then still lands inside
+             * the terminal's patience. Only while an ACK is awaited: a
+             * terminal's own messages keep the long wait.
+             */
+            if (proto->waiting_for_ack && timeout > PKT_ACK_TIMEOUT) {
+                printf("%s: No ACK after %d s, resending.\n", __func__, PKT_ACK_TIMEOUT);
+                return PKT_ERROR_TIMEOUT;
+            }
+
             if (timeout > PKT_TIMEOUT_MAX) {
                 printf("%s: Timeout waiting for packet error.\n", __func__);
                 status = PKT_ERROR_TIMEOUT;
