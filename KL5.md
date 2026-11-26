@@ -9,6 +9,21 @@ Howard M. Harte's work; these commits change how it behaves on a VoIP line
 (an ATA, a soft modem, a long-distance path), where packets get cut, muted or
 lost far more often than on the copper lines it was written for.
 
+## Why KL5 exists
+
+KL5 is a hobby project, made for fun. Payphones like the Protel and the
+Nortel Millennium are great machines, and most of the ones that survive sit
+in garages collecting dust because the network they were built for is gone.
+KL5 is a way to get them working again: making calls, taking coins, calling
+in to a manager and being programmed, on an ordinary VoIP line.
+
+The hope is to bring more people in to set up and use their own phones, and
+to make that easy. A phone that calls in needs something to answer it, so
+the project grew a management console, and the console grew a fictional
+telephone company to run it: KL5 Networks, at
+[kl5networks.com](https://kl5networks.com). The company is make-believe.
+The phones, the call-ins and this code are real.
+
 ## Building
 
 Exactly as upstream:

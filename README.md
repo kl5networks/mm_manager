@@ -1,3 +1,7 @@
+> **This is KL5 Networks' fork of mm_manager, on the `kl5` branch.** mm_manager is Howard M. Harte's work, and the README below is his.
+> This branch adds fifteen fixes for running it over VoIP lines, by John Walker for [KL5 Networks](https://kl5networks.com) (White Clay Technologies LLC).
+> See [KL5.md](KL5.md) for the list and why each one was needed.
+
 # Millennium Manager - mm_manager
 
 
