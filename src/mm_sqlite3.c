@@ -174,7 +174,11 @@ int mm_sql_load_TCASHST(void* db, const char* terminal_id, cashbox_status_univ_t
 
         cashbox_status->status = sqlite3_column_int(res, 2);
         cashbox_status->percent_full = sqlite3_column_int(res, 3);
-        cashbox_status->currency_value = (uint16_t)sqlite3_column_double(res, 4) * 100;
+        /*
+         * Round the dollars to cents before narrowing. The cast binds tighter
+         * than the * 100, so $2.50 was read back as $2.00.
+         */
+        cashbox_status->currency_value = (uint16_t)(sqlite3_column_double(res, 4) * 100.0 + 0.5);
         cashbox_status->coin_count[COIN_COUNT_CA_NICKELS] = sqlite3_column_int(res, 5);
         cashbox_status->coin_count[COIN_COUNT_CA_DIMES] = sqlite3_column_int(res, 6);
         cashbox_status->coin_count[COIN_COUNT_CA_QUARTERS] = sqlite3_column_int(res, 7);
