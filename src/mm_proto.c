@@ -345,6 +345,20 @@ static pkt_status_t receive_mm_packet(mm_proto_t *proto, mm_packet_t *pkt) {
         mm_udp_send_pkt(RX, pkt);
     }
 
+    /*
+     * A packet that failed its CRC or lost its STOP byte has nothing in it
+     * that can be believed, its FLAGS byte included. Acting on those flags
+     * means a damaged frame with the DISCONNECT bit set hangs up the call:
+     * on a VoIP line a dropped byte or two can slide a payload byte into the
+     * flags position. Return the error alone, so the caller NACKs it or
+     * resends.
+     */
+    if (status & (PKT_ERROR_CRC | PKT_ERROR_FRAMING)) {
+        printf("%s: Ignoring the flags (0x%02x) of a damaged packet; asking for it again.\n",
+               __func__, pkt->hdr.flags);
+        return status;
+    }
+
     if (pkt->hdr.flags & FLAG_RETRY) {
         if (proto->debuglevel > 0) print_mm_packet(RX, pkt);
         status |= PKT_ERROR_RETRY;
